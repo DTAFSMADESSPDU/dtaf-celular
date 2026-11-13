@@ -95,6 +95,14 @@ export function saldoConta(conta, lancamentos) {
 const moeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 export const reais = (centavos) => (centavos === null || centavos === undefined ? '' : moeda.format(centavos / 100));
 
+/** R$ compacto para rotulos de grafico: 1,2 mi, 345 mil, 9,6 mil. */
+export function reaisCompacto(centavos) {
+  const v = centavos / 100;
+  if (Math.abs(v) >= 1e6) return `${(v / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mi`;
+  if (Math.abs(v) >= 1e3) return `${(v / 1e3).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil`;
+  return v.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+}
+
 export function dataBR(iso) {
   if (!iso) return '';
   const { a, m, d } = partes(iso);

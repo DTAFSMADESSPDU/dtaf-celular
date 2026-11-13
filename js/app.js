@@ -3,14 +3,17 @@
 // dela permitem: quem decide e o banco (RLS), nao esta tela.
 import { carregarSessao, entrar, sair, lerTabela, trocarSenha, ErroNuvem } from './nuvem.js';
 import * as d from './dados.js';
+import * as g from './graficos.js';
+import * as pn from './paineis.js';
 
 const raiz = document.getElementById('raiz');
 const ABAS = [['painel', 'Painel'], ['contratos', 'Contratos'], ['compras', 'Compras diretas'], ['tac', 'TAC'], ['fundos', 'Fundos'], ['pendencias', 'Pendências']];
-const TABELAS = ['espelho_meta', 'usuario', 'permissao', 'lista_valor', 'natureza_compra', 'fundo', 'fundo_conta', 'fundo_lancamento', 'fornecedor',
+const TABELAS = ['espelho_meta', 'usuario', 'permissao', 'lista_valor', 'natureza_compra', 'limite_legal', 'fundo', 'fundo_conta', 'fundo_lancamento', 'fornecedor',
   'contrato', 'contrato_movimento', 'contrato_fundo', 'compra_direta', 'compra_fornecedor', 'compra_fundo', 'compra_item', 'tac', 'tac_pagamento',
   'pendencia', 'conferencia_campo'];
 
-const E = { dados: null, ix: null, aba: 'painel', detalhe: null, busca: '', filtro: { contratos: 'todos', pendencias: 'abertas' }, hoje: d.hojeISO(), modulos: new Set() };
+const E = { dados: null, ix: null, aba: 'painel', detalhe: null, busca: '', filtro: { contratos: 'todos', pendencias: 'abertas' }, hoje: d.hojeISO(), modulos: new Set(),
+  sub: { contratos: 'painel', compras: 'limites', tac: 'painel' }, filtroIds: null, anoLimites: null, anoCompras: null, unidade: null, todosFundos: false };
 
 // ---------------------------------------------------------------------------------------------------------------- construcao da tela
 function h(tag, atributos, ...filhos) {
@@ -93,7 +96,9 @@ async function carregar() {
   E.dados = Object.fromEntries(TABELAS.map((t, i) => [t, lidas[i]]));
   E.ix = indexar(E.dados);
   E.hoje = d.hojeISO();
-  E.modulos = new Set(E.dados.permissao.filter((p) => p.acao === 'ver').map((p) => p.modulo));
+  E.modulos = new Set(E.dados.permissao.filter((x) => x.acao === 'ver').map((x) => x.modulo));
+  E.todosFundos = E.dados.usuario.length > 0 && E.dados.usuario[0].todos_fundos === 1;
+  if (!E.todosFundos) E.sub.compras = 'analise';
 }
 
 // ---------------------------------------------------------------------------------------------------------------- pecas comuns
@@ -189,16 +194,18 @@ function viewPainel() {
 function viewLista({ aba, textoBusca, itens, cartaoDe, chips }) {
   const lista = h('div', { class: 'lista' });
   const contador = h('p', { class: 'contador', role: 'status' });
+  const idsFiltro = E.filtroIds && E.filtroIds.aba === aba ? new Set(E.filtroIds.ids) : null;
   const filtrar = () => {
     const q = d.normalizar(E.busca);
-    const filtrados = itens().filter((x) => !q || d.normalizar(textoBusca(x)).includes(q));
+    const filtrados = itens().filter((x) => (!idsFiltro || idsFiltro.has(x.id)) && (!q || d.normalizar(textoBusca(x)).includes(q)));
     contador.textContent = `${filtrados.length} registro(s)`;
     trocar(lista, filtrados.map((x) => botaoCartao(cartaoDe(x), () => ir(`#/${aba}/${x.id}`))));
   };
   const campoBusca = h('input', { class: 'busca', type: 'search', placeholder: 'Buscar', 'aria-label': 'Buscar', value: E.busca, oninput: (ev) => { E.busca = ev.target.value; filtrar(); } });
   const faixa = chips ? h('div', { class: 'chips' }, chips(filtrar)) : null;
+  const aviso = idsFiltro ? h('div', { class: 'filtro-ativo' }, `Filtro do gráfico: ${E.filtroIds.rotulo}`, h('button', { type: 'button', 'aria-label': 'Limpar o filtro', onclick: () => { E.filtroIds = null; desenhar(); } }, '✕')) : null;
   filtrar();
-  return h('div', {}, campoBusca, faixa, contador, lista);
+  return h('div', {}, subabas(aba), campoBusca, aviso, faixa, contador, lista);
 }
 
 function chipsDe(aba, opcoes, aoMudar) {
@@ -218,6 +225,7 @@ const fornecedorNome = (c) => {
 function viewContratos() {
   if (!E.modulos.has('contratos')) return bloqueado();
   if (E.detalhe) return fichaContrato(E.ix.contrato.get(Number(E.detalhe)));
+  if (E.sub.contratos === 'painel') return h('div', {}, subabas('contratos'), painelContratosView());
   const filtros = { todos: () => true, vigentes: (c) => c.situacao === 'vigente' && contratoCalc(c).alerta.situacao !== 'vencido',
     a_vencer: (c) => c.situacao === 'vigente' && contratoCalc(c).alerta.situacao === 'a_vencer', vencidos: (c) => c.situacao === 'vigente' && contratoCalc(c).alerta.situacao === 'vencido' };
   return viewLista({
@@ -256,6 +264,8 @@ function fichaContrato(c) {
 function viewCompras() {
   if (!E.modulos.has('compras')) return bloqueado();
   if (E.detalhe) return fichaCompra(E.ix.compra.get(Number(E.detalhe)));
+  if (E.sub.compras === 'limites' && E.todosFundos) return h('div', {}, subabas('compras'), limitesView());
+  if (E.sub.compras === 'analise') return h('div', {}, subabas('compras'), analiseComprasView());
   const nome = (c) => `${c.modalidade} ${c.numero}/${c.ano}`;
   return viewLista({
     aba: 'compras',
@@ -293,6 +303,7 @@ function seloTac(t) {
 function viewTac() {
   if (!E.modulos.has('tac')) return bloqueado();
   if (E.detalhe) return fichaTac(E.ix.tac.get(Number(E.detalhe)));
+  if (E.sub.tac === 'painel') return h('div', {}, subabas('tac'), painelTacView());
   const credor = (t) => (E.ix.forn.get(t.credor_id) || {}).razao_social || '';
   return viewLista({
     aba: 'tac',
@@ -377,6 +388,110 @@ function fichaPendencia(p) {
       alvo ? linhaCampo('Ligada a', `${p.vinculo_tipo === 'compra_direta' ? 'Compra' : p.vinculo_tipo === 'tac' ? 'TAC' : 'Contrato'} ${alvo.numero}/${alvo.ano}`) : null));
 }
 
+// ---------------------------------------------------------------------------------------------------------------- paineis e graficos
+const SUBABAS = { contratos: [['painel', 'Painel'], ['lista', 'Lista']], compras: [['limites', 'Limites'], ['analise', 'Análise'], ['lista', 'Compras']], tac: [['painel', 'Painel'], ['lista', 'Lista']] };
+const qtd = (x) => String(x);
+const bloco = (titulo, ...conteudo) => h('section', { class: 'grupo' }, h('h3', {}, titulo), conteudo);
+const entrada = (x) => ({ ...x, valor: x.valor_centavos });
+const seloNivel = (nivel) => ({ ok: () => selo('Dentro do limite', 'ok'), atencao: () => selo('Atenção', 'atencao'), critico: () => selo('Crítico', 'erro'), estourado: () => selo('Estourado', 'erro'), sem_limite: () => selo('Sem limite', 'neutro') })[nivel]();
+
+function subabas(aba) {
+  const opcoes = (SUBABAS[aba] || []).filter(([k]) => !(aba === 'compras' && k === 'limites' && !E.todosFundos));
+  if (!opcoes.length) return null;
+  return h('div', { class: 'subabas', role: 'tablist' }, opcoes.map(([k, nome]) => h('button', { type: 'button', role: 'tab', class: 'subaba', 'aria-selected': String(E.sub[aba] === k),
+    onclick: () => { E.sub[aba] = k; E.busca = ''; if (k !== 'lista') E.filtroIds = null; desenhar(); } }, nome)));
+}
+
+function filtrarPor(aba, ids, nome) {
+  E.filtroIds = { aba, ids, rotulo: nome };
+  E.sub[aba] = 'lista';
+  E.busca = '';
+  desenhar();
+}
+
+function painelContratosView() {
+  const P = pn.painelContratos(E.dados, E.hoje);
+  const t = P.totais;
+  const ir = (x) => filtrarPor('contratos', x.contratos, x.rotulo);
+  const ids = (situacao) => P.contratos.filter((c) => c.situacao === 'vigente' && c.estado === situacao).map((c) => c.id);
+  return h('div', {},
+    h('div', { class: 'kpis' },
+      g.kpi('Vigentes', qtd(t.vigentes), d.reais(t.valor_vigente_centavos), () => filtrarPor('contratos', P.contratos.filter((c) => c.situacao === 'vigente').map((c) => c.id), 'Vigentes')),
+      g.kpi('A vencer', qtd(t.a_vencer), '', () => filtrarPor('contratos', ids('a_vencer'), 'A vencer')),
+      g.kpi('Vencidos', qtd(t.vencidos), '', () => filtrarPor('contratos', ids('vencido'), 'Vencidos')),
+      g.kpi('Vigência a definir', qtd(t.a_definir), '', () => filtrarPor('contratos', ids('a_definir'), 'A definir'))),
+    bloco('Vencimentos (contratos por mês)', g.colunas(P.por_vencimento, { formato: qtd, campo: 'quantidade', aoClicar: ir, descricao: 'Contratos vigentes por mês de vencimento' })),
+    bloco('Valor por fornecedor', g.barras(g.principaisEOutros(P.por_fornecedor, 8, 'valor_centavos', 'contratos'), { formato: d.reais, campo: 'valor_centavos', aoClicar: ir })),
+    bloco('Valor por origem', g.rosca(P.por_origem.map(entrada), { formato: d.reais, aoClicar: ir, descricao: 'Valor dos contratos vigentes por origem' })),
+    bloco('Valor por fundo', g.rosca(P.por_fundo.map(entrada), { formato: d.reais, aoClicar: ir, descricao: 'Valor dos contratos vigentes por fundo' })),
+    bloco('Situação (todos os contratos)', g.rosca(P.por_situacao.map(entrada), { formato: d.reais, aoClicar: ir, descricao: 'Valor dos contratos por situação' })));
+}
+
+function painelTacView() {
+  const P = pn.painelTac(E.dados);
+  const t = P.totais;
+  const ir = (x) => filtrarPor('tac', x.tacs, x.rotulo);
+  return h('div', {},
+    h('div', { class: 'kpis' }, g.kpi('Termos', qtd(t.termos), `${t.cancelados} cancelado(s)`), g.kpi('Reconhecido', d.reais(t.reconhecido_centavos)), g.kpi('Pago', d.reais(t.pago_centavos)), g.kpi('A pagar', d.reais(t.a_pagar_centavos))),
+    bloco('Situação (valor reconhecido)', g.rosca(P.por_situacao.map(entrada), { formato: d.reais, aoClicar: ir, descricao: 'Valor dos TAC por situação' })),
+    bloco('Por devedor (reconhecido)', g.barras(g.principaisEOutros(P.por_devedor, 8, 'reconhecido_centavos', 'tacs'), { formato: d.reais, campo: 'reconhecido_centavos', aoClicar: ir })),
+    bloco('Por credor (reconhecido)', g.barras(g.principaisEOutros(P.por_credor, 8, 'reconhecido_centavos', 'tacs'), { formato: d.reais, campo: 'reconhecido_centavos', aoClicar: ir })),
+    bloco('Assinaturas por mês (valor)', g.colunas(P.por_mes, { formato: d.reaisCompacto, campo: 'valor_centavos', aoClicar: ir, descricao: 'Valor dos TAC por mês de assinatura' })));
+}
+
+const seletor = (nome, valores, atual, aoMudar) => h('select', { class: 'seletor', 'aria-label': nome, onchange: (ev) => aoMudar(ev.target.value) }, valores.map(([v, rot]) => h('option', { value: v, selected: String(v) === String(atual) }, rot)));
+
+function cartaoNatureza(x) {
+  return h('div', { class: 'natureza grupo' }, h('div', { class: 'linha' }, h('strong', {}, x.rotulo), seloNivel(x.nivel)), g.medidor(x.percentual, x.nivel),
+    h('div', { class: 'nat-numeros' }, h('span', {}, `Usado ${d.reais(x.usado_centavos)}`), h('span', {}, x.limite_centavos === null ? 'Sem limite cadastrado' : `Limite ${d.reais(x.limite_centavos)}`),
+      x.saldo_centavos === null ? null : h('span', {}, `Saldo ${d.reais(x.saldo_centavos)}`), h('span', {}, g.pct(x.percentual))));
+}
+
+function limitesView() {
+  const atual = Number(E.hoje.slice(0, 4));
+  const anos = pn.painelLimites(E.dados, atual, null).anos_disponiveis;
+  const ano = E.anoLimites !== null && anos.includes(E.anoLimites) ? E.anoLimites : (anos.includes(atual) ? atual : anos[0] ?? atual);
+  const L = pn.painelLimites(E.dados, ano, E.unidade || null);
+  const t = L.totais;
+  return h('div', {},
+    h('div', { class: 'seletores' }, seletor('Ano', anos.map((a) => [a, String(a)]), ano, (v) => { E.anoLimites = Number(v); desenhar(); }),
+      seletor('Unidade gestora', [['', 'Todas as unidades'], ...L.unidades_gestoras.map((u) => [u, u])], E.unidade || '', (v) => { E.unidade = v || null; desenhar(); })),
+    h('div', { class: 'kpis' }, g.kpi('Usado no ano', d.reais(t.usado_centavos), `${t.compras} compra(s), ${t.itens} item(ns)`), g.kpi('Em atenção', qtd(t.naturezas_em_atencao)), g.kpi('Críticas', qtd(t.naturezas_criticas)), g.kpi('Estouradas', qtd(t.naturezas_estouradas))),
+    L.limites_cadastrados ? null : h('p', { class: 'vazio' }, 'Limite não cadastrado para este ano.'),
+    L.naturezas.map(cartaoNatureza),
+    L.sem_natureza.itens ? h('div', { class: 'natureza grupo' }, h('div', { class: 'linha' }, h('strong', {}, 'Sem natureza'), selo('Classificar', 'atencao')), h('div', { class: 'nat-numeros' }, h('span', {}, `Usado ${d.reais(L.sem_natureza.usado_centavos)}`), h('span', {}, `${L.sem_natureza.itens} item(ns)`))) : null);
+}
+
+function analiseComprasView() {
+  const todas = pn.painelCompras(E.dados, Number(E.hoje.slice(0, 4)));
+  const anos = todas.anos.length ? todas.anos : [Number(E.hoje.slice(0, 4))];
+  const ano = E.anoCompras !== null && anos.includes(E.anoCompras) ? E.anoCompras : anos[0];
+  const P = pn.painelCompras(E.dados, ano);
+  const t = P.totais;
+  const ir = (x) => filtrarPor('compras', x.compras, x.rotulo);
+  return h('div', {},
+    h('div', { class: 'seletores' }, seletor('Ano', anos.map((a) => [a, String(a)]), ano, (v) => { E.anoCompras = Number(v); desenhar(); })),
+    h('div', { class: 'kpis' }, g.kpi('Compras', qtd(t.compras)), g.kpi('Valor', d.reais(t.valor_centavos)), g.kpi('Fornecedores', qtd(t.fornecedores)), g.kpi('Itens', qtd(t.itens))),
+    bloco('Gasto por mês', g.colunas(P.por_mes, { formato: d.reaisCompacto, campo: 'valor_centavos', aoClicar: ir, descricao: 'Valor das compras diretas por mês' })),
+    bloco('Por natureza', g.rosca(P.por_natureza.map(entrada), { formato: d.reais, aoClicar: ir, descricao: 'Valor dos itens por natureza' })),
+    bloco('Por fornecedor', g.barras(g.principaisEOutros(P.por_fornecedor, 8, 'valor_centavos', 'compras'), { formato: d.reais, campo: 'valor_centavos', aoClicar: ir })),
+    bloco('Por unidade gestora', g.barras(g.principaisEOutros(P.por_unidade, 8, 'valor_centavos', 'compras'), { formato: d.reais, campo: 'valor_centavos', aoClicar: ir })));
+}
+
+function blocosDoPainel() {
+  const blocos = [];
+  if (E.modulos.has('contratos')) {
+    const P = pn.painelContratos(E.dados, E.hoje);
+    blocos.push(bloco('Vencimentos (contratos por mês)', g.colunas(P.por_vencimento, { formato: qtd, campo: 'quantidade', aoClicar: (x) => filtrarPor('contratos', x.contratos, x.rotulo), descricao: 'Contratos vigentes por mês de vencimento' })));
+  }
+  if (E.modulos.has('compras') && E.todosFundos) {
+    const L = pn.painelLimites(E.dados, Number(E.hoje.slice(0, 4)));
+    const alerta = L.naturezas.filter((x) => ['atencao', 'critico', 'estourado'].includes(x.nivel));
+    blocos.push(bloco(`Limites das compras em alerta (${L.ano})`, alerta.length ? alerta.map(cartaoNatureza) : h('p', { class: 'vazio' }, 'Nenhuma natureza em alerta.')));
+  }
+  return blocos;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- trocar a propria senha
 function viewSenha() {
   const campo = (id, nome, auto) => [h('label', { for: id }, nome), h('input', { id, name: id, type: 'password', autocomplete: auto, required: true })];
@@ -408,7 +523,7 @@ function viewSenha() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------- estrutura da pagina
-const VIEWS ={ painel: viewPainel, contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias };
+const VIEWS = { painel: () => h('div', {}, viewPainel(), blocosDoPainel()), contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias };
 
 function trocarTema() {
   const atual = document.documentElement.dataset.tema || (matchMedia('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro');
@@ -420,6 +535,7 @@ function trocarTema() {
 function desenhar() {
   lerHash();
   if (E.abaAnterior !== E.aba) {
+    E.filtroIds = null; // o filtro do grafico tambem vale so na aba em que foi feito
     E.busca = ''; // a busca vale so dentro da aba em que foi digitada
     E.abaAnterior = E.aba;
   }
