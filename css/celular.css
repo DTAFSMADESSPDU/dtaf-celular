@@ -101,6 +101,8 @@ dl { margin: 0; }
 .login label { font-size: 13px; color: var(--texto-suave); margin-top: 8px; }
 .login input { min-height: 46px; padding: 0 12px; border: 1px solid var(--borda); border-radius: 10px; background: var(--superficie); }
 .erro { min-height: 20px; margin: 6px 0 0; color: var(--erro); font-weight: 600; }
+.sucesso { min-height: 20px; margin: 6px 0 0; color: var(--ok-texto); font-weight: 600; }
+.formulario { max-width: 420px; }
 .primario, .secundario { min-height: 46px; padding: 0 18px; border-radius: 10px; font-weight: 600; }
 .primario { border: 0; background: var(--verde); color: var(--sobre-verde); }
 .secundario { border: 1px solid var(--borda); background: var(--superficie); }

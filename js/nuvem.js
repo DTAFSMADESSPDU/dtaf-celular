@@ -88,6 +88,24 @@ export async function sair() {
   }
 }
 
+/** Troca a PROPRIA senha (unica escrita do aplicativo, e so no login: /auth/v1/user). A nuvem confere a senha atual e a forca da nova. */
+export async function trocarSenha(atual, nova) {
+  const r = await chamar('/auth/v1/user', { metodo: 'PUT', corpo: { password: nova, current_password: atual }, token: await token() });
+  if (r.ok) return;
+  let texto = '';
+  try {
+    const j = await r.json();
+    texto = `${j.error_code || ''} ${j.code || ''} ${j.msg || ''} ${j.message || ''}`.toLowerCase();
+  } catch (e) {
+    texto = '';
+  }
+  if (r.status === 401 && !/current|password/.test(texto)) throw new ErroNuvem('sessao');
+  if (/current_password|incorrect current|reauth/.test(texto)) throw new ErroNuvem('senha_atual');
+  if (/weak_password|should contain|at least/.test(texto)) throw new ErroNuvem('senha_fraca');
+  if (/same_password|different from the old/.test(texto)) throw new ErroNuvem('senha_igual');
+  throw new ErroNuvem('servidor');
+}
+
 /** Le a tabela inteira (de mil em mil linhas). Devolve [] quando as regras de acesso nao liberam nada. */
 export async function lerTabela(nome, ordem) {
   const linhas = [];

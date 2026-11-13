@@ -116,6 +116,13 @@ export function hojeISO(agora = new Date()) {
 /** Texto sem acento e em minusculas, para busca. */
 export const normalizar = (t) => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+/** Regra da senha da nuvem (a mesma do DTAF): 12 caracteres ou mais, com minusculas, maiusculas e digitos. Devolve '' quando esta boa. */
+export function problemaDeSenha(nova) {
+  if (nova.length < 12) return 'A senha precisa ter 12 caracteres ou mais.';
+  if (!/[a-z]/.test(nova) || !/[A-Z]/.test(nova) || !/[0-9]/.test(nova)) return 'A senha precisa ter letras maiúsculas, minúsculas e números.';
+  return '';
+}
+
 export function horasDesde(iso, agora = new Date()) {
   const t = new Date(iso);
   return Number.isNaN(t.getTime()) ? null : (agora.getTime() - t.getTime()) / 3600000;

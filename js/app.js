@@ -1,7 +1,7 @@
 // Aplicativo do celular do DTAF: so visualiza o espelho que o computador servidor envia (D03, D53). Nenhum texto vira HTML (a tela
 // e montada por elementos e textContent), sem avaliar codigo, sem biblioteca externa. Cada pessoa ve so o que o modulo e os fundos
 // dela permitem: quem decide e o banco (RLS), nao esta tela.
-import { carregarSessao, entrar, sair, lerTabela, ErroNuvem } from './nuvem.js';
+import { carregarSessao, entrar, sair, lerTabela, trocarSenha, ErroNuvem } from './nuvem.js';
 import * as d from './dados.js';
 
 const raiz = document.getElementById('raiz');
@@ -138,6 +138,7 @@ function ir(destino) {
 
 function lerHash() {
   const [, aba, id] = location.hash.split('/');
+  E.senha = aba === 'senha';
   const valida = ABAS.some(([k]) => k === aba);
   E.aba = valida ? aba : 'painel';
   E.detalhe = valida && id ? id : null;
@@ -376,8 +377,38 @@ function fichaPendencia(p) {
       alvo ? linhaCampo('Ligada a', `${p.vinculo_tipo === 'compra_direta' ? 'Compra' : p.vinculo_tipo === 'tac' ? 'TAC' : 'Contrato'} ${alvo.numero}/${alvo.ano}`) : null));
 }
 
+// ---------------------------------------------------------------------------------------------------------------- trocar a propria senha
+function viewSenha() {
+  const campo = (id, nome, auto) => [h('label', { for: id }, nome), h('input', { id, name: id, type: 'password', autocomplete: auto, required: true })];
+  const erro = h('p', { class: 'erro', role: 'alert' });
+  const pronto = h('p', { class: 'sucesso', role: 'status' });
+  const botao = h('button', { type: 'submit', class: 'primario' }, 'Salvar');
+  const form = h('form', { class: 'login formulario', onsubmit: async (ev) => {
+    ev.preventDefault();
+    erro.textContent = '';
+    pronto.textContent = '';
+    const [atual, nova, confirma] = ['senha-atual', 'senha-nova', 'senha-confirma'].map((i) => form.querySelector(`#${i}`).value);
+    const problema = d.problemaDeSenha(nova) || (nova !== confirma ? 'A confirmação não confere com a nova senha.' : '') || (nova === atual ? 'A nova senha precisa ser diferente da atual.' : '');
+    if (problema) { erro.textContent = problema; return; }
+    botao.disabled = true;
+    try {
+      await trocarSenha(atual, nova);
+      form.reset();
+      pronto.textContent = 'Senha alterada.';
+    } catch (e) {
+      const t = e instanceof ErroNuvem ? e.tipo : '';
+      if (t === 'sessao') { await deslogar(); return; }
+      erro.textContent = { senha_atual: 'Senha atual incorreta.', senha_fraca: 'Senha fraca. Use 12 caracteres ou mais, com maiúsculas, minúsculas e números.',
+        senha_igual: 'A nova senha precisa ser diferente da atual.', rede: 'Sem conexão.' }[t] || 'Não foi possível trocar a senha. Tente de novo.';
+    } finally {
+      botao.disabled = false;
+    }
+  } }, campo('senha-atual', 'Senha atual', 'current-password'), campo('senha-nova', 'Nova senha', 'new-password'), campo('senha-confirma', 'Confirmar a nova senha', 'new-password'), erro, pronto, botao);
+  return h('div', {}, volta('Voltar', '#/painel'), h('div', { class: 'ficha-topo' }, h('h2', {}, 'Trocar senha')), form);
+}
+
 // ---------------------------------------------------------------------------------------------------------------- estrutura da pagina
-const VIEWS = { painel: viewPainel, contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias };
+const VIEWS ={ painel: viewPainel, contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias };
 
 function trocarTema() {
   const atual = document.documentElement.dataset.tema || (matchMedia('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro');
@@ -396,7 +427,7 @@ function desenhar() {
   const horas = meta ? d.horasDesde(meta.gerado_em) : null;
   const abas = ABAS.filter(([k]) => E.modulos.has(k));
   if (!abas.some(([k]) => k === E.aba)) E.aba = abas.length ? abas[0][0] : 'painel';
-  const conteudo = h('main', { id: 'conteudo', class: 'conteudo' }, VIEWS[E.aba]());
+  const conteudo = h('main', { id: 'conteudo', class: 'conteudo' }, E.senha ? viewSenha() : VIEWS[E.aba]());
   trocar(raiz,
     h('header', { class: 'topo' },
       h('img', { src: 'img/brasao.png', alt: '', class: 'brasao', width: '32', height: '32' }),
@@ -404,6 +435,7 @@ function desenhar() {
       h('div', { class: 'acoes' },
         h('button', { type: 'button', class: 'botao-topo', onclick: atualizar }, 'Atualizar'),
         h('button', { type: 'button', class: 'botao-topo', onclick: trocarTema }, 'Tema'),
+        h('button', { type: 'button', class: 'botao-topo', onclick: () => ir('#/senha') }, 'Senha'),
         h('button', { type: 'button', class: 'botao-topo', onclick: deslogar }, 'Sair'))),
     h('nav', { class: 'abas', role: 'tablist' }, abas.map(([k, nome]) => h('button', { type: 'button', role: 'tab', class: 'aba', 'aria-selected': String(k === E.aba), onclick: () => { E.busca = ''; ir(`#/${k}`); } }, nome))),
     conteudo);
