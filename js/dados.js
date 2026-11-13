@@ -30,7 +30,7 @@ export function diasEntre(a, b) {
 }
 
 function ordenados(movimentos) {
-  const chave = (m) => [m.data_assinatura || '9999-12-31', m.ordem || 0, m.id];
+  const chave = (m) => [m.data_assinatura || m.data_assinatura_fecho || '9999-12-31', m.ordem || 0, m.id];
   return [...movimentos].sort((p, q) => {
     const a = chave(p);
     const b = chave(q);

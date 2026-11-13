@@ -1,19 +1,22 @@
 // Aplicativo do celular do DTAF: so visualiza o espelho que o computador servidor envia (D03, D53). Nenhum texto vira HTML (a tela
 // e montada por elementos e textContent), sem avaliar codigo, sem biblioteca externa. Cada pessoa ve so o que o modulo e os fundos
 // dela permitem: quem decide e o banco (RLS), nao esta tela.
-import { carregarSessao, entrar, sair, lerTabela, trocarSenha, ErroNuvem } from './nuvem.js';
+import { carregarSessao, emailDaSessao, entrar, sair, lerTabela, trocarSenha, ErroNuvem } from './nuvem.js';
 import * as d from './dados.js';
 import * as g from './graficos.js';
 import * as pn from './paineis.js';
 
 const raiz = document.getElementById('raiz');
-const ABAS = [['painel', 'Painel'], ['contratos', 'Contratos'], ['compras', 'Compras diretas'], ['tac', 'TAC'], ['fundos', 'Fundos'], ['pendencias', 'Pendências']];
-const TABELAS = ['espelho_meta', 'usuario', 'permissao', 'lista_valor', 'natureza_compra', 'limite_legal', 'fundo', 'fundo_conta', 'fundo_lancamento', 'fornecedor',
+const ABAS = [['painel', 'Painel'], ['contratos', 'Contratos'], ['compras', 'Compras diretas'], ['tac', 'TAC'], ['fundos', 'Fundos'], ['pendencias', 'Pendências'],
+  ['numeracao', 'Numeração'], ['administracao', 'Administração']];
+const TABELAS = ['espelho_meta', 'usuario', 'permissao', 'usuario_fundo', 'contrato_fiscal', 'numeracao_uso', 'parametro', 'calendario_dia', 'auditoria',
+  'lista_valor', 'natureza_compra', 'limite_legal', 'fundo', 'fundo_conta', 'fundo_lancamento', 'fornecedor',
   'contrato', 'contrato_movimento', 'contrato_fundo', 'compra_direta', 'compra_fornecedor', 'compra_fundo', 'compra_item', 'tac', 'tac_pagamento',
   'pendencia', 'conferencia_campo'];
 
 const E = { dados: null, ix: null, aba: 'painel', detalhe: null, busca: '', filtro: { contratos: 'todos', pendencias: 'abertas' }, hoje: d.hojeISO(), modulos: new Set(),
-  sub: { contratos: 'painel', compras: 'limites', tac: 'painel' }, filtroIds: null, anoLimites: null, anoCompras: null, unidade: null, todosFundos: false };
+  sub: { contratos: 'painel', compras: 'limites', tac: 'painel', administracao: 'usuarios' }, filtroIds: null, anoLimites: null, anoCompras: null, unidade: null, todosFundos: false,
+  eu: null, num: { tipo: 'oficio', ano: null, faixa: null }, auditoria: { limite: 100, busca: '', modulo: '' } };
 
 // ---------------------------------------------------------------------------------------------------------------- construcao da tela
 function h(tag, atributos, ...filhos) {
@@ -96,8 +99,10 @@ async function carregar() {
   E.dados = Object.fromEntries(TABELAS.map((t, i) => [t, lidas[i]]));
   E.ix = indexar(E.dados);
   E.hoje = d.hojeISO();
-  E.modulos = new Set(E.dados.permissao.filter((x) => x.acao === 'ver').map((x) => x.modulo));
-  E.todosFundos = E.dados.usuario.length > 0 && E.dados.usuario[0].todos_fundos === 1;
+  const email = emailDaSessao().toLowerCase();
+  E.eu = E.dados.usuario.find((x) => x.email.toLowerCase() === email) || null; // quem tem Administracao recebe todos os usuarios: o proprio e achado pelo e-mail
+  E.modulos = new Set(E.dados.permissao.filter((x) => E.eu && x.usuario_id === E.eu.id && x.acao === 'ver').map((x) => x.modulo));
+  E.todosFundos = E.eu !== null && E.eu.todos_fundos === 1;
   if (!E.todosFundos) E.sub.compras = 'analise';
 }
 
@@ -248,7 +253,8 @@ function fichaContrato(c) {
     h('div', { class: 'ficha-topo' }, h('h2', {}, `Contrato ${c.numero}/${c.ano}`), seloContrato(c)),
     grupo('Dados', linhaCampo('Fornecedor', fornecedorNome(c), cf('fornecedor')), linhaCampo('Objeto', c.objeto, cf('objeto')), linhaCampo('Contratante', c.contratante, cf('contratante')),
       linhaCampo('Origem', rotulo('origem_contrato', c.origem), cf('origem')), linhaCampo('Número da origem', c.origem_numero, cf('origem_numero')),
-      linhaCampo('Processo (SIGED)', c.processo_adm, cf('processo_adm')), linhaCampo('Assinatura', d.dataBR(c.data_assinatura), cf('data_assinatura')), linhaCampo('Fundos', fundos.join(', '))),
+      linhaCampo('Processo (SIGED)', c.processo_adm, cf('processo_adm')), linhaCampo('Assinatura', d.dataBR(c.data_assinatura), cf('data_assinatura')), linhaCampo('Fundos', fundos.join(', ')), linhaCampo('Observações', c.observacoes)),
+    fiscaisDoContrato(c),
     grupo('Vigência', linhaCampo('Início', d.dataBR(k.vigencia.inicio), cf('vigencia_inicio')), linhaCampo('Prazo (meses)', c.prazo_meses, cf('prazo_meses')),
       linhaCampo('Fim', k.vigencia.fim ? `${d.dataBR(k.vigencia.fim)}${origemVig}` : 'A definir', cf('vigencia_fim_informada')),
       linhaCampo('Dias para o fim', k.alerta.dias === null ? '' : String(k.alerta.dias))),
@@ -257,7 +263,14 @@ function fichaContrato(c) {
       h('div', { class: 'linha' }, h('strong', {}, `${m.ordem || ''}º ${rotulo('tipo_movimento', m.tipo)}`.trim()), h('span', { class: 'suave' }, d.dataBR(m.data_assinatura))),
       h('dl', {}, linhaCampo('Nova vigência', [d.dataBR(m.nova_vigencia_inicio), d.dataBR(m.nova_vigencia_fim)].filter(Boolean).join(' a ')), linhaCampo('Prazo (meses)', m.prazo_meses),
         linhaCampo('Variação de valor', d.reais(m.valor_variacao_centavos)), linhaCampo('Novo valor global', d.reais(m.novo_valor_global_centavos)), linhaCampo('Fundamento legal', m.fundamento_legal),
-        linhaCampo('Processo (SIGED)', m.processo_adm))))) : null);
+        linhaCampo('Processo (SIGED)', m.processo_adm), linhaCampo('Parecer', m.parecer), linhaCampo('Observações', m.observacoes))))) : null);
+}
+
+function fiscaisDoContrato(c) {
+  const fiscais = E.dados.contrato_fiscal.filter((f) => f.contrato_id === c.id);
+  if (!fiscais.length) return null;
+  return grupo('Fiscalização', fiscais.map((f) => linhaCampo(rotulo('papel_fiscalizacao', f.papel),
+    [f.nome, f.portaria ? `portaria ${f.portaria}` : '', f.desde || f.ate ? `${d.dataBR(f.desde)} a ${d.dataBR(f.ate) || 'atual'}` : ''].filter(Boolean).join(' · '))));
 }
 
 // ---------------------------------------------------------------------------------------------------------------- compras diretas
@@ -285,7 +298,7 @@ function fichaCompra(c) {
   return h('div', {}, volta('Compras diretas', '#/compras'), h('div', { class: 'ficha-topo' }, h('h2', {}, `${c.modalidade} ${c.numero}/${c.ano}`)),
     grupo('Dados', linhaCampo('Objeto', c.objeto_resumo), linhaCampo('Unidade gestora', c.unidade_gestora, cf('unidade_gestora')), linhaCampo('Processo (SIGED)', c.processo_adm, cf('processo_adm')),
       linhaCampo('Publicação', d.dataBR(c.data_publicacao), cf('data_publicacao')), linhaCampo('Ramo', rotulo('ramo_compra', c.tipo)), linhaCampo('Total', d.reais(c.valor_total_centavos), cf('valor_total_centavos')),
-      linhaCampo('Fundos', fundos.join(', '))),
+      linhaCampo('Fundos', fundos.join(', ')), linhaCampo('Condutor', c.condutor), linhaCampo('Observações', c.observacoes)),
     fornecedores.length ? h('section', { class: 'grupo' }, h('h3', {}, 'Vencedores'), fornecedores.map((x) => h('div', { class: 'subcartao' }, h('div', { class: 'linha' },
       h('strong', {}, (E.ix.forn.get(x.fornecedor_id) || {}).razao_social || ''), h('span', { class: 'valor' }, d.reais(x.valor_centavos)))))) : null,
     itens.length ? h('section', { class: 'grupo' }, h('h3', {}, 'Itens'), itens.map((i) => h('div', { class: 'subcartao' },
@@ -323,13 +336,14 @@ function fichaTac(t) {
     grupo('Dados', linhaCampo('Devedor', t.devedor, cf('devedor')), linhaCampo('Secretaria', t.secretaria), linhaCampo('Credor', (E.ix.forn.get(t.credor_id) || {}).razao_social, cf('credor')),
       linhaCampo('Objeto', t.objeto), linhaCampo('Período', t.periodo, cf('periodo')), linhaCampo('Abrangência', t.abrangencia), linhaCampo('Fundamento legal', t.fundamento_legal),
       linhaCampo('Processo (SIGED)', t.processo_adm, cf('processo_adm')), linhaCampo('Assinatura', d.dataBR(t.data_assinatura)), linhaCampo('Documento', d.dataBR(t.data_documento)),
-      linhaCampo('Publicação', d.dataBR(t.data_publicacao))),
+      linhaCampo('Publicação', d.dataBR(t.data_publicacao)), linhaCampo('Motivo da ausência de contrato', t.motivo_sem_contrato), linhaCampo('Notas fiscais', t.notas_fiscais),
+      linhaCampo('Condição de pagamento', t.pagamento_condicao), linhaCampo('Parecer jurídico', t.parecer_juridico, cf('parecer_juridico')), linhaCampo('Observações', t.observacoes)),
     grupo('Valores', linhaCampo('Valor reconhecido', d.reais(t.valor_centavos), cf('valor_centavos')), linhaCampo('Notas fiscais', d.reais(t.valor_notas_fiscais_centavos)),
       linhaCampo('Glosa', d.reais(t.valor_glosa_centavos)), linhaCampo('Ressalva', d.reais(t.valor_ressalvado_centavos)), linhaCampo('Pago', d.reais(k.pago)), linhaCampo('Saldo a pagar', d.reais(k.saldo))),
     grupo('Empenho', linhaCampo('Nota de empenho', t.nota_empenho, cf('nota_empenho')), linhaCampo('Valor', d.reais(t.valor_empenho_centavos)), linhaCampo('Data', d.dataBR(t.data_empenho)),
       linhaCampo('Dotação', t.dotacao), linhaCampo('Fonte de recurso', t.fonte_recurso)),
     pagamentos.length ? h('section', { class: 'grupo' }, h('h3', {}, 'Pagamentos'), pagamentos.map((p) => h('div', { class: 'subcartao' }, h('div', { class: 'linha' },
-      h('strong', {}, p.data ? d.dataBR(p.data) : 'Sem data'), h('span', { class: 'valor' }, d.reais(p.valor_centavos))), p.referencia ? h('div', { class: 'suave pequena' }, p.referencia) : null))) : null);
+      h('strong', {}, p.data ? d.dataBR(p.data) : 'Sem data'), h('span', { class: 'valor' }, d.reais(p.valor_centavos))), [p.referencia, p.observacoes].filter(Boolean).length ? h('div', { class: 'suave pequena' }, [p.referencia, p.observacoes].filter(Boolean).join(' · ')) : null))) : null);
 }
 
 // ---------------------------------------------------------------------------------------------------------------- fundos
@@ -355,7 +369,7 @@ function fichaFundo(f) {
       const lancamentos = [...(E.ix.lanc.get(c.id) || [])].sort((a, b) => String(b.data).localeCompare(String(a.data)) || b.id - a.id);
       return h('section', { class: 'grupo' }, h('h3', {}, c.descricao), h('div', { class: 'linha' }, h('span', { class: 'suave' }, 'Saldo'), h('strong', { class: 'valor' }, d.reais(d.saldoConta(c, E.ix.lanc.get(c.id) || [])))),
         lancamentos.map((l) => h('div', { class: 'subcartao' }, h('div', { class: 'linha' }, h('strong', {}, `${d.dataBR(l.data)} · ${rotulo('natureza_lancamento', l.tipo)}`),
-          h('span', { class: `valor ${['entrada', 'resgate'].includes(l.tipo) ? 'entra' : 'sai'}` }, d.reais(l.valor_centavos))), l.descricao ? h('div', { class: 'suave pequena' }, l.descricao) : null)));
+          h('span', { class: `valor ${['entrada', 'resgate'].includes(l.tipo) ? 'entra' : 'sai'}` }, d.reais(l.valor_centavos))), [l.descricao, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).length ? h('div', { class: 'suave pequena' }, [l.descricao, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).join(' · ')) : null)));
     }));
 }
 
@@ -384,12 +398,13 @@ function fichaPendencia(p) {
   const alvo = p.vinculo_tipo ? { contrato: E.ix.contrato.get(p.vinculo_id), compra_direta: E.ix.compra.get(p.vinculo_id), tac: E.ix.tac.get(p.vinculo_id) }[p.vinculo_tipo] : null;
   return h('div', {}, volta('Pendências', '#/pendencias'), h('div', { class: 'ficha-topo' }, h('h2', {}, p.titulo), seloPendencia(p)),
     grupo('Dados', linhaCampo('Tipo', rotulo('tipo_pendencia', p.tipo)), linhaCampo('Descrição', p.descricao), linhaCampo('Prioridade', rotulo('prioridade_pendencia', p.prioridade)),
-      linhaCampo('Prazo', d.dataBR(p.prazo)), linhaCampo('Concluída em', d.dataBR(p.concluida_em)), linhaCampo('Fundo', (E.ix.fundo.get(p.fundo_id) || {}).sigla),
+      linhaCampo('Prazo', d.dataBR(p.prazo)), linhaCampo('Responsável', p.responsavel), linhaCampo('Concluída em', d.dataBR(p.concluida_em)), linhaCampo('Fundo', (E.ix.fundo.get(p.fundo_id) || {}).sigla),
       alvo ? linhaCampo('Ligada a', `${p.vinculo_tipo === 'compra_direta' ? 'Compra' : p.vinculo_tipo === 'tac' ? 'TAC' : 'Contrato'} ${alvo.numero}/${alvo.ano}`) : null));
 }
 
 // ---------------------------------------------------------------------------------------------------------------- paineis e graficos
-const SUBABAS = { contratos: [['painel', 'Painel'], ['lista', 'Lista']], compras: [['limites', 'Limites'], ['analise', 'Análise'], ['lista', 'Compras']], tac: [['painel', 'Painel'], ['lista', 'Lista']] };
+const SUBABAS = { contratos: [['painel', 'Painel'], ['lista', 'Lista']], compras: [['limites', 'Limites'], ['analise', 'Análise'], ['lista', 'Compras']], tac: [['painel', 'Painel'], ['lista', 'Lista']],
+  administracao: [['usuarios', 'Usuários'], ['auditoria', 'Auditoria'], ['parametros', 'Parâmetros']] };
 const qtd = (x) => String(x);
 const bloco = (titulo, ...conteudo) => h('section', { class: 'grupo' }, h('h3', {}, titulo), conteudo);
 const entrada = (x) => ({ ...x, valor: x.valor_centavos });
@@ -492,6 +507,124 @@ function blocosDoPainel() {
   return blocos;
 }
 
+// ---------------------------------------------------------------------------------------------------------------- numeracao (so consulta: quem usa o numero e o DTAF)
+function textoDoNumero(s, n) {
+  const det = s.detalhes[String(n)];
+  if (!s.usados.includes(n)) return `Nº ${n}/${s.ano}: livre`;
+  if (det && det.origem === 'cadastro') return `Nº ${n}/${s.ano}: já cadastrado no módulo TAC`;
+  if (det && det.origem === 'manual') return `Nº ${n}/${s.ano}: usado por ${det.por || 'outra pessoa'} em ${d.instanteBR(det.em)}`;
+  return `Nº ${n}/${s.ano}: marcado na configuração inicial`;
+}
+
+function viewNumeracao() {
+  if (!E.modulos.has('numeracao')) return bloqueado();
+  const anoAtual = Number(E.hoje.slice(0, 4));
+  const N = E.num;
+  const anos = pn.anosNumeracao(E.dados, N.tipo, [anoAtual]);
+  const ano = N.ano !== null && anos.includes(N.ano) ? N.ano : anoAtual;
+  const resumo = pn.resumoNumeracao(E.dados, ano);
+  const s = pn.situacaoNumeracao(E.dados, N.tipo, ano, anoAtual);
+  const faixas = Math.ceil(s.limite / 100);
+  const faixa = Math.min(N.faixa !== null ? N.faixa : (s.proximo === null ? 0 : Math.floor((s.proximo - 1) / 100)), faixas - 1);
+  const usados = new Set(s.usados);
+  const detalhe = h('p', { class: 'num-detalhe', role: 'status' }, 'Toque num número usado para ver quem o usou.');
+  const celulas = [];
+  for (let n = faixa * 100 + 1; n <= Math.min(s.limite, (faixa + 1) * 100); n++) {
+    const estado = n === s.proximo ? 'proximo' : usados.has(n) ? 'usado' : 'livre';
+    celulas.push(h('button', { type: 'button', class: `num-celula ${estado}`, 'aria-label': `Número ${n}: ${estado === 'proximo' ? 'próximo disponível' : estado}`, onclick: () => { detalhe.textContent = textoDoNumero(s, n); } }, String(n)));
+  }
+  const mudar = (campo, valor) => { E.num[campo] = valor; if (campo !== 'faixa') E.num.faixa = null; desenhar(); };
+  setTimeout(() => { const ativa = document.querySelector('.faixas .chip[aria-pressed="true"]'); if (ativa) ativa.scrollIntoView({ inline: 'center', block: 'nearest' }); }, 0); // a faixa ativa aparece na linha de botoes
+  return h('div', {},
+    h('div', { class: 'subabas', role: 'tablist' }, resumo.map((r) => h('button', { type: 'button', role: 'tab', class: 'subaba', 'aria-selected': String(r.tipo === N.tipo), onclick: () => mudar('tipo', r.tipo) },
+      `${r.rotulo} · ${r.proximo === null ? 'completo' : `nº ${r.proximo}`}`))),
+    h('div', { class: 'seletores' }, seletor('Ano', anos.map((a) => [a, String(a)]), ano, (v) => mudar('ano', Number(v)))),
+    h('div', { class: 'num-proximo grupo' }, h('span', { class: 'kpi-nome' }, `Próximo disponível · ${s.rotulo} ${ano}`), h('span', { class: 'num-grande' }, s.proximo === null ? 'Completo' : String(s.proximo)),
+      h('span', { class: 'kpi-apoio' }, `${s.quantidade_usada} usado(s) · ${s.livres} livre(s) · até ${s.limite}`)),
+    h('div', { class: 'faixas' }, Array.from({ length: faixas }, (_x, i) => h('button', { type: 'button', class: 'chip', 'aria-pressed': String(i === faixa), onclick: () => mudar('faixa', i) }, `${i * 100 + 1}–${Math.min(s.limite, (i + 1) * 100)}`))),
+    h('div', { class: 'num-grade' }, celulas),
+    h('div', { class: 'num-legenda' }, h('span', { class: 'chave num-celula livre' }), 'Livre', h('span', { class: 'chave num-celula usado' }), 'Usado', h('span', { class: 'chave num-celula proximo' }), 'Próximo disponível'),
+    detalhe);
+}
+
+// ---------------------------------------------------------------------------------------------------------------- administracao (usuarios e acessos, auditoria, parametros), so consulta
+const COMUNS = ['ver', 'criar', 'editar', 'arquivar', 'conferir', 'exportar'];
+const MATRIZ = [['painel', 'Painel', ['ver']], ['contratos', 'Contratos', COMUNS], ['compras', 'Compras diretas', COMUNS], ['tac', 'TAC', COMUNS], ['fundos', 'Fundos', COMUNS],
+  ['pendencias', 'Pendências', COMUNS], ['numeracao', 'Numeração', ['ver', 'criar', 'editar', 'arquivar']], ['relatorios', 'Relatórios', ['ver', 'exportar']], ['administracao', 'Administração', ['ver', 'administrar']]];
+const ROTULO_ACAO = { ver: 'Ver', criar: 'Criar', editar: 'Editar', arquivar: 'Arquivar', conferir: 'Conferir', exportar: 'Exportar', administrar: 'Administrar' };
+const ROTULO_MODULO = Object.fromEntries(MATRIZ.map(([k, nome]) => [k, nome]));
+const ROTULO_AUDITORIA = { login: 'Entrou', redefinir_senha_por_link: 'Definiu a senha por link', aceitar_convite: 'Primeiro acesso concluído', gerar_convite: 'Link de acesso gerado', definir_acesso: 'Acesso alterado',
+  pre_cadastrar: 'Pré-cadastro', criar: 'Criou', editar: 'Editou', arquivar: 'Arquivou', conferir: 'Conferiu', carga: 'Carga de dados', marcar: 'Usou número', liberar: 'Liberou número', marcar_ate: 'Marcou números até', desligar: 'Desligou o sistema' };
+const rotuloAcao = (a) => ROTULO_AUDITORIA[a] || a.replace(/_/g, ' ');
+
+function viewAdministracao() {
+  if (!E.modulos.has('administracao')) return bloqueado();
+  const sub = E.sub.administracao;
+  return h('div', {}, subabas('administracao'), E.detalhe && sub === 'usuarios' ? fichaUsuario(E.dados.usuario.find((u) => u.id === Number(E.detalhe))) : sub === 'auditoria' ? auditoriaView() : sub === 'parametros' ? parametrosView() : usuariosView());
+}
+
+function usuariosView() {
+  const permitidos = (u) => E.dados.permissao.filter((p) => p.usuario_id === u.id && p.acao === 'ver').length;
+  return h('div', { class: 'lista' }, [...E.dados.usuario].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')).map((u) => botaoCartao(
+    cartao(u.nome, selo(u.ativo === 1 ? 'Ativo' : 'Inativo', u.ativo === 1 ? 'ok' : 'neutro'), h('div', { class: 'suave' }, u.email),
+      h('div', { class: 'linha pequena' }, h('span', {}, u.todos_fundos === 1 ? 'Todos os fundos' : `${E.dados.usuario_fundo.filter((x) => x.usuario_id === u.id).length} fundo(s)`), h('span', {}, `${permitidos(u)} módulo(s)`))),
+    () => ir(`#/administracao/${u.id}`))));
+}
+
+function fichaUsuario(u) {
+  if (!u) return h('div', {}, volta('Usuários', '#/administracao'), h('p', { class: 'vazio' }, 'Usuário não encontrado.'));
+  const tem = new Set(E.dados.permissao.filter((p) => p.usuario_id === u.id).map((p) => `${p.modulo}/${p.acao}`));
+  const fundos = u.todos_fundos === 1 ? 'Todos os fundos' : E.dados.usuario_fundo.filter((x) => x.usuario_id === u.id).map((x) => (E.ix.fundo.get(x.fundo_id) || {}).sigla || (E.ix.fundo.get(x.fundo_id) || {}).nome).filter(Boolean).join(', ') || 'Nenhum';
+  const acoes = Object.keys(ROTULO_ACAO);
+  return h('div', {}, volta('Usuários', '#/administracao'), h('div', { class: 'ficha-topo' }, h('h2', {}, u.nome), selo(u.ativo === 1 ? 'Ativo' : 'Inativo', u.ativo === 1 ? 'ok' : 'neutro')),
+    grupo('Dados', linhaCampo('E-mail', u.email), linhaCampo('Fundos', fundos), linhaCampo('Último acesso', d.instanteBR(u.ultimo_acesso))),
+    h('section', { class: 'grupo' }, h('h3', {}, 'Acessos (só consulta)'), h('div', { class: 'matriz-rolagem' }, h('table', { class: 'matriz' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Módulo'), acoes.map((a) => h('th', {}, ROTULO_ACAO[a])))),
+      h('tbody', {}, MATRIZ.map(([modulo, nome, doModulo]) => h('tr', {}, h('th', { scope: 'row' }, nome),
+        acoes.map((a) => h('td', { class: doModulo.includes(a) ? (tem.has(`${modulo}/${a}`) ? 'sim' : 'nao') : 'na', 'aria-label': doModulo.includes(a) ? (tem.has(`${modulo}/${a}`) ? 'Tem' : 'Não tem') : 'Não se aplica' },
+          doModulo.includes(a) ? (tem.has(`${modulo}/${a}`) ? '✓' : '–') : '')))))))));
+}
+
+function auditoriaView() {
+  const A = E.auditoria;
+  const nome = new Map(E.dados.usuario.map((u) => [u.id, u.nome]));
+  const modulos = [...new Set(E.dados.auditoria.map((a) => a.modulo))].sort();
+  const lista = h('div', { class: 'lista' });
+  const contador = h('p', { class: 'contador', role: 'status' });
+  const pintar = () => {
+    const q = d.normalizar(A.busca);
+    const todas = [...E.dados.auditoria].sort((a, b) => b.id - a.id).filter((x) => (!A.modulo || x.modulo === A.modulo)
+      && (!q || d.normalizar(`${x.acao} ${x.entidade} ${x.usuario_email} ${nome.get(x.usuario_id) || ''} ${x.depois || ''}`).includes(q)));
+    contador.textContent = `${todas.length} registro(s)`;
+    trocar(lista, todas.slice(0, A.limite).map((x) => {
+      const antes = x.antes ? textoJson(x.antes) : null; const depois = x.depois ? textoJson(x.depois) : null;
+      return h('details', { class: 'auditoria-item cartao' }, h('summary', {}, h('div', { class: 'linha' }, h('strong', {}, rotuloAcao(x.acao)), h('span', { class: 'suave pequena' }, d.instanteBR(x.quando))),
+        h('div', { class: 'suave pequena' }, `${nome.get(x.usuario_id) || x.usuario_email || 'Sistema'} · ${ROTULO_MODULO[x.modulo] || x.modulo} · ${x.entidade}${x.entidade_id ? ` #${x.entidade_id}` : ''} · origem ${x.origem}`)),
+      antes ? h('div', {}, h('div', { class: 'suave pequena' }, 'Antes'), h('pre', { class: 'json' }, antes)) : null, depois ? h('div', {}, h('div', { class: 'suave pequena' }, 'Depois'), h('pre', { class: 'json' }, depois)) : null);
+    }), todas.length > A.limite ? h('button', { type: 'button', class: 'secundario', onclick: () => { A.limite += 100; pintar(); } }, 'Mostrar mais') : null);
+  };
+  const campo = h('input', { class: 'busca', type: 'search', placeholder: 'Buscar', 'aria-label': 'Buscar na auditoria', value: A.busca, oninput: (ev) => { A.busca = ev.target.value; A.limite = 100; pintar(); } });
+  pintar();
+  return h('div', {}, h('div', { class: 'seletores' }, seletor('Módulo', [['', 'Todos os módulos'], ...modulos.map((m) => [m, ROTULO_MODULO[m] || m])], A.modulo, (v) => { A.modulo = v; A.limite = 100; desenhar(); })), campo, contador, lista);
+}
+
+function textoJson(texto) {
+  try { return JSON.stringify(JSON.parse(texto), null, 1); } catch (e) { return texto; }
+}
+
+function parametrosView() {
+  const porGrupo = new Map();
+  for (const p of E.dados.parametro) { if (!porGrupo.has(p.grupo)) porGrupo.set(p.grupo, []); porGrupo.get(p.grupo).push(p); }
+  const limites = [...E.dados.limite_legal].sort((a, b) => b.ano - a.ano || cmpTexto(a.tipo, b.tipo));
+  return h('div', {},
+    [...porGrupo.entries()].sort(([a], [b]) => cmpTexto(a, b)).map(([grupoNome, itens]) => grupo(grupoNome, itens.sort((a, b) => cmpTexto(a.chave, b.chave)).map((p) => linhaCampo(p.chave, p.valor)))),
+    grupo('Limites legais (art. 75)', limites.map((l) => linhaCampo(`${l.ano} · ${l.tipo}`, `${d.reais(l.valor_centavos)} (${l.fonte}, ${l.grau})`))),
+    grupo('Calendário (dias sem expediente)', [...E.dados.calendario_dia].sort((a, b) => cmpTexto(a.data, b.data)).map((c) => linhaCampo(d.dataBR(c.data), `${c.motivo}${c.fonte ? ` (${c.fonte})` : ''}`))),
+    E.dados.calendario_dia.length ? null : h('p', { class: 'vazio' }, 'Nenhum dia cadastrado no calendário.'));
+}
+
+const cmpTexto = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+
 // ---------------------------------------------------------------------------------------------------------------- trocar a propria senha
 function viewSenha() {
   const campo = (id, nome, auto) => [h('label', { for: id }, nome), h('input', { id, name: id, type: 'password', autocomplete: auto, required: true })];
@@ -523,7 +656,7 @@ function viewSenha() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------- estrutura da pagina
-const VIEWS = { painel: () => h('div', {}, viewPainel(), blocosDoPainel()), contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias };
+const VIEWS = { painel: () => h('div', {}, viewPainel(), blocosDoPainel()), contratos: viewContratos, compras: viewCompras, tac: viewTac, fundos: viewFundos, pendencias: viewPendencias, numeracao: viewNumeracao, administracao: viewAdministracao };
 
 function trocarTema() {
   const atual = document.documentElement.dataset.tema || (matchMedia('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro');
@@ -604,7 +737,7 @@ async function iniciarComSessao() {
     if (e instanceof ErroNuvem && e.tipo === 'sessao') return telaLogin();
     return telaMensagem(e instanceof ErroNuvem && e.tipo === 'rede' ? 'Sem conexão.' : 'Não foi possível carregar.', h('button', { type: 'button', class: 'primario', onclick: atualizar }, 'Tentar de novo'), h('button', { type: 'button', class: 'secundario', onclick: deslogar }, 'Sair'));
   }
-  if (E.dados.usuario.length === 0) return telaMensagem('Seu e-mail não está liberado.', h('button', { type: 'button', class: 'secundario', onclick: deslogar }, 'Sair'));
+  if (E.eu === null) return telaMensagem('Seu e-mail não está liberado.', h('button', { type: 'button', class: 'secundario', onclick: deslogar }, 'Sair'));
   desenhar();
 }
 

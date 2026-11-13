@@ -198,6 +198,53 @@ export function painelCompras(D, ano) {
   };
 }
 
+// ----------------------------------------------------------------------------------------------------------------- numeracao de documentos (app/numeracao.py)
+export const TIPOS_NUMERACAO = { oficio: 'Ofícios', tac: 'TAC', portaria: 'Portarias', ci: 'CIs' };
+const LIMITE_PADRAO_NUMERACAO = 2000;
+
+/** Teto da numeracao: parametro numeracao.limite; valor invalido ou fora de 1 a 1.000.000 volta ao padrao (2000). */
+export function limiteNumeracao(D) {
+  const p = (D.parametro || []).find((x) => x.chave === 'numeracao.limite');
+  const v = p && /^\s*[+-]?\d+\s*$/.test(p.valor) ? parseInt(p.valor, 10) : NaN;
+  return Number.isInteger(v) && v >= 1 && v <= 1000000 ? v : LIMITE_PADRAO_NUMERACAO;
+}
+
+/** Usados (marcados e, no TAC, os ja cadastrados), proximo livre e quem marcou, dentro da faixa 1..limite. */
+export function estadoNumeracao(D, tipo, ano) {
+  const teto = limiteNumeracao(D);
+  const nomes = new Map(D.usuario.map((u) => [u.id, u.nome]));
+  const detalhes = {}; const usados = new Set();
+  for (const l of D.numeracao_uso.filter((x) => x.tipo === tipo && x.ano === ano)) {
+    if (l.numero > teto) continue;
+    usados.add(l.numero);
+    if (l.origem === 'manual') detalhes[String(l.numero)] = { origem: 'manual', por: nomes.has(l.usado_por) ? nomes.get(l.usado_por) : null, em: l.usado_em };
+  }
+  if (tipo === 'tac') {
+    for (const t of D.tac) {
+      const texto = (t.numero || '').trim();
+      if (t.ano === ano && /^[0-9]+$/.test(texto) && parseInt(texto, 10) <= teto) { const n = parseInt(texto, 10); usados.add(n); detalhes[String(n)] = { origem: 'cadastro', por: null, em: null }; }
+    }
+  }
+  let proximo = null;
+  for (let n = 1; n <= teto; n++) if (!usados.has(n)) { proximo = n; break; }
+  return { tipo, rotulo: TIPOS_NUMERACAO[tipo], ano, limite: teto, usados: [...usados].sort((a, b) => a - b), quantidade_usada: usados.size, livres: teto - usados.size, proximo, detalhes };
+}
+
+export function anosNumeracao(D, tipo, extras = []) {
+  const anos = new Set(D.numeracao_uso.filter((x) => x.tipo === tipo).map((x) => x.ano));
+  if (tipo === 'tac') for (const t of D.tac) anos.add(t.ano);
+  for (const a of extras) if (a !== null && a !== undefined) anos.add(a);
+  return [...anos].sort((a, b) => b - a);
+}
+
+export function situacaoNumeracao(D, tipo, ano, anoAtual = null) {
+  return { ...estadoNumeracao(D, tipo, ano), anos: anosNumeracao(D, tipo, [ano, anoAtual]) };
+}
+
+export function resumoNumeracao(D, ano) {
+  return Object.keys(TIPOS_NUMERACAO).map((tipo) => { const e = estadoNumeracao(D, tipo, ano); return { tipo, rotulo: e.rotulo, ano, limite: e.limite, usados: e.quantidade_usada, livres: e.livres, proximo: e.proximo }; });
+}
+
 // ----------------------------------------------------------------------------------------------------------------- limites das compras por natureza
 export function nivelDoLimite(usado, limite, atencao, critico) {
   if (limite === null || limite === undefined) return 'sem_limite';

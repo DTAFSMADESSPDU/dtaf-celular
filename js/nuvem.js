@@ -25,6 +25,9 @@ function guardar(nova) {
   }
 }
 
+/** E-mail da conta que esta logada (para achar o proprio usuario entre os que a nuvem libera). */
+export const emailDaSessao = () => (sessao && sessao.email) || '';
+
 export function carregarSessao() {
   try {
     const texto = localStorage.getItem(CHAVE_SESSAO);
